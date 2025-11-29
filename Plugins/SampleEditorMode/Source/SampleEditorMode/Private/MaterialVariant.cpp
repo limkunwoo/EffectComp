@@ -3,8 +3,4 @@
 
 #include "MaterialVariant.h"
 
-FMaterialVariant::FMaterialVariant()
-{
-	Index = (EVariantIndex)Variant.GetIndex();
-}
 

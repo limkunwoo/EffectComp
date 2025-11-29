@@ -45,7 +45,8 @@ public class SampleEditorMode : ModuleRules
 				"LevelEditor",
 				"InteractiveToolsFramework",
 				"EditorInteractiveToolsFramework",
-                "PropertyEditor"
+                "PropertyEditor",
+                "ToolWidgets"
 				// ... add private dependencies that you statically link with here ...	
 			}
 			);

@@ -15,22 +15,20 @@ enum class EMateriaVariantIndex
 	Int64,
 	String,
 	LinearColor,
+	Texture,
 	Max
 };
 
-USTRUCT(BlueprintType)
-struct SAMPLEEDITORMODE_API FMaterialVariant
+class UTexture;
+
+template<typename TVariant, typename TDerived>
+struct PLATFORM_EMPTY_BASES TUStructVariantImpl
 {
-	GENERATED_BODY()
-public:
-	using VariantType = TVariant<bool, int64, FString, FLinearColor>;
-	using EVariantIndex = EMateriaVariantIndex;
-	static_assert(TVariantSize_V<VariantType> == (int32)EVariantIndex::Max, "");
-public:
-	FMaterialVariant();
+	using VariantType = TVariant;
+	using ImplType = TUStructVariantImpl<TVariant, TDerived>;
 
 	template<typename T>
-	T TryGet()
+	T* TryGet()
 	{
 		return Variant.TryGet<T>();
 	}
@@ -38,36 +36,47 @@ public:
 	void Set(T&& Value)
 	{
 		Variant.Set<std::remove_cvref_t<T>>(Forward<T>(Value));
-		Index = (EVariantIndex)Variant.GetIndex();
 	}
 
 	template<typename T>
-	FMaterialVariant& operator=(T&& InValue)
+	TUStructVariantImpl& operator=(T&& InValue)
 	{
 		Set<T>(Forward<T>(InValue));
 	}
-
+	
+	bool Serialize(FArchive& Ar)
+	{
+		Ar << Variant;
+		return true;
+	}
+	
 	template<typename Func>
 	decltype(auto) Visit(Func&& Callable)
 	{
 		return ::Visit(Forward<Func>(Callable), Variant);
 	}
 
-	bool Serialize(FArchive& Ar)
+	int32 GetIndex() const
 	{
-		Ar << Variant;
-		return true;
+		return Variant.GetIndex();
 	}
-
-private:
-	template<typename T>
-	friend class FVariantDetailCustomization;
 	VariantType Variant;
-#if WITH_EDITORONLY_DATA
-	UPROPERTY(EditAnywhere)
-	EMateriaVariantIndex Index;
-#endif
 };
+
+USTRUCT(BlueprintType)
+struct SAMPLEEDITORMODE_API FVariantBase
+{
+	GENERATED_BODY()
+};
+
+USTRUCT(BlueprintType)
+struct SAMPLEEDITORMODE_API FMaterialVariant : public FVariantBase, public TUStructVariantImpl<TVariant<bool, double, FString, FLinearColor, TSoftObjectPtr<UTexture>>, FMaterialVariant>
+{
+	GENERATED_BODY()
+public:
+	using ImplType::operator=;
+};
+
 
 template<> struct TStructOpsTypeTraits<FMaterialVariant> : public TStructOpsTypeTraitsBase2<FMaterialVariant>
 {

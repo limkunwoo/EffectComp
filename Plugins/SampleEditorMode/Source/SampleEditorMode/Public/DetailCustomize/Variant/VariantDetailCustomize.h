@@ -10,85 +10,11 @@
 #include "IPropertyUtilities.h"
 #include "DetailLayoutBuilder.h"
 #include "IDetailChildrenBuilder.h"
-#include "VariantDetailCustomize.generated.h"
+#include "VariantProxy.h"
+#include "SSearchableComboBox.h"
 /**
  * 
  */
-
-template<typename T>
-struct TVariantElementTrait;
-
-USTRUCT()
-struct FVariantElementProxy
-{
-    virtual ~FVariantElementProxy() {}
-    GENERATED_BODY()
-};
-
-template<typename T>
-struct TVariantElementProxyImpl
-{
-    virtual ~TVariantElementProxyImpl() {}
-    virtual T& ValueRef() = 0;
-};
-USTRUCT()
-struct FBoolVarProxy : public FVariantElementProxy, public TVariantElementProxyImpl<bool>
-{
-    GENERATED_BODY()
-
-    bool& ValueRef()
-    {
-        return Bool;
-    }
-    UPROPERTY(EditAnywhere)
-    bool Bool;
-};
-
-template<>
-struct TVariantElementTrait<bool>
-{
-    using Type = FBoolVarProxy;
-};
-
-USTRUCT()
-struct FInt64VarProxy : public FVariantElementProxy, public TVariantElementProxyImpl<int64>
-{
-    GENERATED_BODY()
-
-    int64& ValueRef()
-    {
-        return Int64;
-    }
-
-    UPROPERTY(EditAnywhere)
-    int64 Int64;
-};
-
-template<>
-struct TVariantElementTrait<int64>
-{
-    using Type = FInt64VarProxy;
-};
-
-USTRUCT()
-struct FStringVarProxy : public FVariantElementProxy, public TVariantElementProxyImpl<FString>
-{
-    GENERATED_BODY()
-
-    FString& ValueRef()
-    {
-        return String;
-    }
-
-    UPROPERTY(EditAnywhere)
-    FString String;
-};
-
-template<>
-struct TVariantElementTrait<FString>
-{
-    using Type = FStringVarProxy;
-};
 
 template<typename T, typename VariantType>
 void EmplaceVariant(VariantType& Variant)
@@ -105,6 +31,13 @@ void EmplaceImpl(SIZE_T Index, TVariant<Ts...>& Variant)
     Invokers[Index](Variant);
 }
 
+template<typename... Ts>
+TArray<TSharedPtr<FString>> GetTypeOptions(TVariant<Ts...>& Variant)
+{
+    TArray<TSharedPtr<FString>> Result = { MakeShared<FString>(TVariantElementDisplayTraits<Ts>::GetDisplayName())... };
+    return Result;
+}
+
 template<typename FVariantType>
 class FVariantDetailCustomization : public IPropertyTypeCustomization
 {
@@ -117,15 +50,13 @@ public:
     virtual void CustomizeHeader(TSharedRef<IPropertyHandle> InPropertyHandle, FDetailWidgetRow& InHeaderRow, IPropertyTypeCustomizationUtils& InCustomizationUtils) override
     {
         VariantStructPropertyHandle = InPropertyHandle;
-        TSharedPtr<IPropertyHandle> TypeIndexHandle = InPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FVariantType, Index));
 
         FVariantType* CurrValue = nullptr;
         GetValueRef(CurrValue);
-        if (CurrValue)
-        {
-            CurrValue->Index = (FVariantType::EVariantIndex)(CurrValue->Variant.GetIndex());
-        }
         
+        TypeOptions = GetTypeOptions(CurrValue->Variant);
+        TSharedPtr<FString> InitiallySellectedItem = TypeOptions[CurrValue->GetIndex()];
+
         InHeaderRow
         .NameContent()
         [
@@ -133,30 +64,36 @@ public:
         ]
         .ValueContent()
         [
-            TypeIndexHandle->CreatePropertyValueWidget()
+            SAssignNew(TypeCombobox, SSearchableComboBox)
+            .Content()
+            [
+                SNew(STextBlock)
+                .Text_Lambda([this]() 
+                    {
+                        FVariantType* CurrValue = nullptr;
+                        GetValueRef(CurrValue);
+
+                        if (!CurrValue) return FText::FromString(TEXT("Error"));
+
+                        int32 Index = CurrValue->GetIndex();
+                        return FText::FromString(*TypeOptions[Index]);
+                    })
+            ]
+            .OptionsSource(&TypeOptions)
+            .OnGenerateWidget(this, &FVariantDetailCustomization::OnGenerateComboWidget)
+            .OnSelectionChanged(this, &FVariantDetailCustomization::OnSelectionChangedInternal)
+            //.OnComboBoxOpening(InArgs._OnComboBoxOpening)
+            .InitiallySelectedItem(InitiallySellectedItem)
+            .SearchVisibility(EVisibility::Collapsed)
         ];
 	}
 	virtual void CustomizeChildren(TSharedRef<IPropertyHandle> InPropertyHandle, IDetailChildrenBuilder& InChildBuilder, IPropertyTypeCustomizationUtils& InCustomizationUtils) override
 	{
         LayoutBuilder = &InChildBuilder.GetParentCategory().GetParentLayout();
 
-        TSharedPtr<IPropertyHandle> TypeIndexHandle = InPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FVariantType, Index));
-        TypeIndexHandle->SetOnPropertyValueChanged(FSimpleDelegate::CreateLambda([this]()
-            {
-                FVariantType* CurrValue;
-                GetValueRef(CurrValue);
-                if (!CurrValue)
-                {
-                    LayoutBuilder->ForceRefreshDetails();
-                }
-
-                EmplaceImpl((int32)CurrValue->Index, CurrValue->Variant);
-                LayoutBuilder->ForceRefreshDetails();
-            }));
 
         FVariantType* CurrValue = nullptr;
         GetValueRef(CurrValue);
-        TSharedPtr<IPropertyHandle> ChildStructHandle;
         CurrValue->Visit([&](auto& Value)
         {
             using ValueType = std::remove_cvref_t<decltype(Value)>;
@@ -165,34 +102,31 @@ public:
                 auto Row = InChildBuilder.AddExternalStructure(MakeShareable(new FStructOnScope(TBaseStructure<ValueType>::Get(), (uint8*)&Value)));
             }
             else
-            {
+            { 
                 using ProxyType = TVariantElementTrait<ValueType>::Type;
-
                 TUniquePtr<ProxyType> ProxyPtr = MakeUnique<ProxyType>();
                 ProxyType* ProxyRawPtr = ProxyPtr.Get();
+                ProxyRawPtr->Init(Value);
                 Proxy = MoveTemp(ProxyPtr);
-
-                ProxyRawPtr->ValueRef() = Value;
+                
                 auto Row = InChildBuilder.AddExternalStructure(MakeShareable(new FStructOnScope(ProxyType::StaticStruct(), (uint8*)ProxyRawPtr)));
                 Row->Visibility(EVisibility::Collapsed);
-                ChildStructHandle = Row->GetPropertyHandle();
+                TSharedPtr<IPropertyHandle> ChildStructHandle = Row->GetPropertyHandle();
                 ChildStructHandle->SetOnChildPropertyValueChanged(FSimpleDelegate::CreateLambda([this, ProxyRawPtr]()
+                {
+                    if constexpr (requires() { TVariantElementTrait<ValueType>::Conversion(Value); })
+                    {
+                        OnValueChanged(TVariantElementTrait<ValueType>::Conversion(ProxyRawPtr->ValueRef()));
+                    }
+                    else
                     {
                         OnValueChanged(ProxyRawPtr->ValueRef());
-                    }));
+                    }
+                }));
+                ProxyRawPtr->OnStructureAdded(ChildStructHandle, InChildBuilder, InCustomizationUtils);
             }
             
         });
-
-        uint32 NumChild;
-        if (ChildStructHandle && ChildStructHandle->GetNumChildren(NumChild))
-        {
-            for (uint32 i = 0; i < NumChild; i++)
-            {
-                auto Handle = ChildStructHandle->GetChildHandle(i);
-                InChildBuilder.AddProperty(Handle.ToSharedRef());
-            }
-        }
 	}
 
     FPropertyAccess::Result GetValueRef(FVariantType*& OutValue)
@@ -243,9 +177,38 @@ public:
         VariantStructPropertyHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 	}
 
+    TSharedRef<SWidget> OnGenerateComboWidget(TSharedPtr<FString> InComboString)
+    {
+        return
+            SNew(STextBlock)
+            .Text(FText::FromString(*InComboString));
+    }
 
-	TSharedPtr<IPropertyHandle> VariantStructPropertyHandle;
+    void OnSelectionChangedInternal(TSharedPtr<FString> InSelectedItem, ESelectInfo::Type SelectInfo)
+    {
+        int32 Index = TypeOptions.IndexOfByKey(InSelectedItem);
+        if (Index != INDEX_NONE)
+        {
+            FVariantType* CurrValue;
+            GetValueRef(CurrValue);
+            if (!CurrValue)
+            {
+                LayoutBuilder->ForceRefreshDetails();
+            }
+
+            EmplaceImpl(Index, CurrValue->Variant);
+            LayoutBuilder->ForceRefreshDetails();
+        }
+        else
+        {
+            TypeCombobox->ClearSelection();
+        }
+    }
+
+    TSharedPtr<IPropertyHandle> VariantStructPropertyHandle;
     IDetailLayoutBuilder* LayoutBuilder;
     TUniquePtr<FVariantElementProxy> Proxy;
+    TArray<TSharedPtr<FString>> TypeOptions;
+    TSharedPtr<SSearchableComboBox> TypeCombobox;
 };
 
