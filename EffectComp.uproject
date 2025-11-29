@@ -27,7 +27,15 @@
 			]
 		},
 		{
+			"Name": "GenericFSM",
+			"Enabled": true
+		},
+		{
 			"Name": "RawInput",
+			"Enabled": true
+		},
+		{
+			"Name": "GameplayStateTree",
 			"Enabled": true
 		}
 	]

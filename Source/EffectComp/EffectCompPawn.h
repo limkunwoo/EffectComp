@@ -149,6 +149,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Input")
 	void DoBrakeStop();
 
+	UFUNCTION(BlueprintImplementableEvent)
+	void DoSomething();
 	/** Handle handbrake start input by input actions or mobile interface */
 	UFUNCTION(BlueprintCallable, Category="Input")
 	void DoHandbrakeStart();

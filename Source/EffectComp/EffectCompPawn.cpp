@@ -216,6 +216,7 @@ void AEffectCompPawn::DoBrakeStop()
 
 void AEffectCompPawn::DoHandbrakeStart()
 {
+	DoSomething();
 	// add the input
 	ChaosVehicleMovement->SetHandbrakeInput(true);
 
