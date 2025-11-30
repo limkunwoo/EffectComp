@@ -74,6 +74,9 @@ struct SAMPLEEDITORMODE_API FMaterialVariant : public FVariantBase, public TUStr
 {
 	GENERATED_BODY()
 public:
+	FMaterialVariant()
+	{
+	}
 	using ImplType::operator=;
 };
 
@@ -84,4 +87,14 @@ template<> struct TStructOpsTypeTraits<FMaterialVariant> : public TStructOpsType
 	{
 		WithSerializer = true,
 	};
+};
+
+class UMaterialInterface;
+
+USTRUCT(BlueprintType)
+struct SAMPLEEDITORMODE_API FVariantTest1 : public FVariantBase, public TUStructVariantImpl<TVariant<bool, FLinearColor, TSoftObjectPtr<UMaterialInterface>>, FVariantTest1>
+{
+	GENERATED_BODY()
+public:
+	using ImplType::operator=;
 };

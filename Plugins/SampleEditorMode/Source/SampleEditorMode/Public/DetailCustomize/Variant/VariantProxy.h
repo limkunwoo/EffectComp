@@ -27,30 +27,109 @@ struct FVariantElementProxy
     GENERATED_BODY()
 };
 
-template<typename T>
+template<typename T, typename TDerived>
 struct TVariantElementProxyImpl
 {
     virtual ~TVariantElementProxyImpl() {}
     virtual T& ValueRef() = 0;
-    virtual void Init(T& InValue)
+    virtual void Init(T& InValue, TAttribute<EVisibility> InVisibility)
     {
         ValueRef() = InValue;
+        Visibility = InVisibility;
     }
-
-    virtual void OnStructureAdded(TSharedPtr<IPropertyHandle> StructureHandle, IDetailChildrenBuilder& InChildBuilder, IPropertyTypeCustomizationUtils& InCustomizationUtils)
+    
+    template<typename T>
+    T& GetValueAs()
     {
+        return ValueRef();
+    }
+    
+    virtual IDetailPropertyRow* Customize(IDetailChildrenBuilder& InChildBuilder, IPropertyTypeCustomizationUtils& InCustomizationUtils)
+    {
+        TDerived& DerivedRef = *static_cast<TDerived*>(this);
+        auto Row = InChildBuilder.AddExternalStructure(MakeShareable(new FStructOnScope(TDerived::StaticStruct(), (uint8*)&DerivedRef)));
+        Row->Visibility(EVisibility::Collapsed);
+        auto StructureHandle = Row->GetPropertyHandle();
         uint32 NumChild;
         StructureHandle->GetNumChildren(NumChild);
         for (uint32 i = 0; i < NumChild; i++)
         {
             auto Handle = StructureHandle->GetChildHandle(i);
-            InChildBuilder.AddProperty(Handle.ToSharedRef());
+            InChildBuilder.AddProperty(Handle.ToSharedRef()).Visibility(Visibility);
         }
+        return Row;
     }
+    TAttribute<EVisibility> Visibility;
 };
 
 USTRUCT()
-struct FBoolVarProxy : public FVariantElementProxy, public TVariantElementProxyImpl<bool>
+struct FDefaultVarProxy : public FVariantElementProxy
+{
+    GENERATED_BODY()
+
+    ~FDefaultVarProxy()
+    {
+    }
+
+    struct FStorage
+    {
+        virtual ~FStorage()
+        {
+        }
+
+        virtual uint8* GetBuffer() const = 0;
+    };
+
+    template<typename T>
+    struct TStorage : public FStorage
+    {
+        virtual ~TStorage() {}
+        virtual uint8* GetBuffer() const override
+        {
+            return (uint8*)&Data;
+        }
+        T Data;
+    };
+
+    template<typename T>
+    void Init(T& InValue, TAttribute<EVisibility> InVisibility)
+    {
+        ScriptStruct = TBaseStructure<T>::Get();
+        Buffer = MakeShared<TStorage<T>>();
+        GetValueAs<T>() = InValue;
+        Visibility = InVisibility;
+    }
+    
+    IDetailPropertyRow* Customize(IDetailChildrenBuilder& InChildBuilder, IPropertyTypeCustomizationUtils& InCustomizationUtils)
+    {
+        auto Row = InChildBuilder.AddExternalStructure(MakeShareable(new FStructOnScope(ScriptStruct, Buffer->GetBuffer())));
+        Row->Visibility(Visibility);
+        return Row;
+    }
+
+    template<typename T>
+    T& GetValueAs()
+    {
+        check(ScriptStruct == TBaseStructure<T>::Get());
+        return *(T*)Buffer->GetBuffer();
+    }
+
+    UScriptStruct* ScriptStruct;
+    TSharedPtr<FStorage> Buffer;
+    TAttribute<EVisibility> Visibility;
+};
+
+template<typename T>
+concept HasBaseStruct = requires() { TBaseStructure<T>::Get(); };
+
+template<HasBaseStruct Struct>
+struct TVariantElementTrait<Struct>
+{
+    using Type = FDefaultVarProxy;
+};
+
+USTRUCT()
+struct FBoolVarProxy : public FVariantElementProxy, public TVariantElementProxyImpl<bool, FBoolVarProxy>
 {
     GENERATED_BODY()
 
@@ -78,7 +157,7 @@ struct TVariantElementDisplayTraits<bool>
 };
 
 USTRUCT()
-struct FInt64VarProxy : public FVariantElementProxy, public TVariantElementProxyImpl<int64>
+struct FInt64VarProxy : public FVariantElementProxy, public TVariantElementProxyImpl<int64, FInt64VarProxy>
 {
     GENERATED_BODY()
 
@@ -107,7 +186,7 @@ struct TVariantElementDisplayTraits<int64>
 };
 
 USTRUCT()
-struct FDoubleVarProxy : public FVariantElementProxy, public TVariantElementProxyImpl<double>
+struct FDoubleVarProxy : public FVariantElementProxy, public TVariantElementProxyImpl<double, FDoubleVarProxy>
 {
     GENERATED_BODY()
 
@@ -136,7 +215,7 @@ struct TVariantElementDisplayTraits<double>
 };
 
 USTRUCT()
-struct FStringVarProxy : public FVariantElementProxy, public TVariantElementProxyImpl<FString>
+struct FStringVarProxy : public FVariantElementProxy, public TVariantElementProxyImpl<FString, FStringVarProxy>
 {
     GENERATED_BODY()
 
@@ -164,7 +243,7 @@ struct TVariantElementDisplayTraits<FString>
 };
 
 USTRUCT()
-struct FSoftObjectPtrVarProxy : public FVariantElementProxy, public TVariantElementProxyImpl<TSoftObjectPtr<UObject>>
+struct FSoftObjectPtrVarProxy : public FVariantElementProxy
 {
     GENERATED_BODY()
 
@@ -172,19 +251,20 @@ struct FSoftObjectPtrVarProxy : public FVariantElementProxy, public TVariantElem
     {
         return Object;
     }
-    virtual void Init(TSoftObjectPtr<UObject>& InValue) override
-    {
-        Object = InValue;
-        Class = UObject::StaticClass();
-    }
-    template<typename T> requires (!std::is_same_v<UObject, T>)
-    void Init(TSoftObjectPtr<T>& InValue)
+
+    template<typename T>
+    void Init(TSoftObjectPtr<T>& InValue, TAttribute<EVisibility> InVisibility)
     {
         Class = T::StaticClass();
         Object = InValue;
+        Visibility = InVisibility;
     }
-    virtual void OnStructureAdded(TSharedPtr<IPropertyHandle> StructureHandle, IDetailChildrenBuilder& InChildBuilder, IPropertyTypeCustomizationUtils& InCustomizationUtils)
+    
+    virtual IDetailPropertyRow* Customize(IDetailChildrenBuilder& InChildBuilder, IPropertyTypeCustomizationUtils& InCustomizationUtils)
     {
+        auto Row = InChildBuilder.AddExternalStructure(MakeShareable(new FStructOnScope(FSoftObjectPtrVarProxy::StaticStruct(), (uint8*)this)));
+        Row->Visibility(EVisibility::Collapsed);
+        auto StructureHandle = Row->GetPropertyHandle();
         InChildBuilder.AddCustomRow(FText::FromString(TEXT("Object")))
         .NameContent()
         [
@@ -193,10 +273,18 @@ struct FSoftObjectPtrVarProxy : public FVariantElementProxy, public TVariantElem
         .ValueContent()
         [
             SNew(SObjectPropertyEntryBox)
-            .AllowedClass(Class)
-            .PropertyHandle(StructureHandle->GetChildHandle(0))
-            .ThumbnailPool(InCustomizationUtils.GetThumbnailPool())
-        ];
+                .AllowedClass(Class)
+                .PropertyHandle(StructureHandle->GetChildHandle(0))
+                .ThumbnailPool(InCustomizationUtils.GetThumbnailPool())
+        ]
+        .Visibility(Visibility);
+        return Row;
+    }
+
+    template<typename T>
+    T GetValueAs()
+    {
+        return T(Object.ToSoftObjectPath());
     }
 
     UPROPERTY(EditAnywhere)
@@ -204,17 +292,13 @@ struct FSoftObjectPtrVarProxy : public FVariantElementProxy, public TVariantElem
     UPROPERTY()
      
     UClass* Class;
+    TAttribute<EVisibility> Visibility;
 };
 
 template<typename T>
 struct TVariantElementTrait<TSoftObjectPtr<T>>
 {
     using Type = FSoftObjectPtrVarProxy;
-
-    static TSoftObjectPtr<T> Conversion(TSoftObjectPtr<UObject> Value)
-    {
-        return TSoftObjectPtr<T>(Value.ToSoftObjectPath());
-    }
 };
 
 template<typename T>

@@ -19,6 +19,10 @@ void FSampleEditorModeModule::StartupModule()
 	rPropertyModule.RegisterCustomPropertyTypeLayout(
 		"MaterialVariant",
 		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FVariantDetailCustomization<FMaterialVariant>::MakeInstance));
+
+	rPropertyModule.RegisterCustomPropertyTypeLayout(
+		"VariantTest1",
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FVariantDetailCustomization<FVariantTest1>::MakeInstance));
 }
 
 void FSampleEditorModeModule::ShutdownModule()

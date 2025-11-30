@@ -38,9 +38,69 @@ TArray<TSharedPtr<FString>> GetTypeOptions(TVariant<Ts...>& Variant)
     return Result;
 }
 
+
 template<typename FVariantType>
 class FVariantDetailCustomization : public IPropertyTypeCustomization
 {
+    using ProxyArrayType = TArray<TUniquePtr<FVariantElementProxy>>;
+    template<typename T, typename VariantType>
+    void CustomizevariantImpl(VariantType& Variant, ProxyArrayType& Map, IDetailChildrenBuilder& InChildBuilder, IPropertyTypeCustomizationUtils& InCustomizationUtils)
+    {
+        using ValueType = std::remove_cvref_t<T>;
+        using ProxyType = TVariantElementTrait<ValueType>::Type;
+
+        TUniquePtr<ProxyType> Proxy = MakeUnique<ProxyType>();
+        
+        ProxyType* ProxyRawPtr = Proxy.Get();
+
+        TAttribute<EVisibility> Visibility = TAttribute<EVisibility>::CreateLambda([this]()
+            {
+                FVariantType* CurrValue = nullptr;
+                GetValueRef(CurrValue);
+                if (!CurrValue)
+                {
+                    return EVisibility::Collapsed;
+                }
+                int32 TypeIndex = CurrValue->Variant.IndexOfType<T>();
+                int32 CurrentIndex = CurrValue->GetIndex();
+
+                return TypeIndex == CurrentIndex ? EVisibility::Visible : EVisibility::Collapsed;
+            });
+
+        if (Variant.GetIndex() == Variant.IndexOfType<ValueType>())
+        {
+            ProxyRawPtr->Init(Variant.Get<ValueType>(), Visibility);
+        }
+        else
+        {
+            T DefaultValue;
+            ProxyRawPtr->Init(DefaultValue, Visibility);
+        }
+
+        Map.Emplace(MoveTemp(Proxy));
+        IDetailPropertyRow* Row = ProxyRawPtr->Customize(InChildBuilder, InCustomizationUtils);
+
+        TSharedPtr<IPropertyHandle> ChildStructHandle = Row->GetPropertyHandle();
+        ChildStructHandle->SetOnChildPropertyValueChanged(FSimpleDelegate::CreateLambda([this, ProxyRawPtr]()
+            {
+                OnValueChanged(ProxyRawPtr->GetValueAs<ValueType>());
+            }));
+    }
+
+    template<typename... Ts>
+    void CustomizeVariant(TVariant<Ts...>& Variant, ProxyArrayType& Map, IDetailChildrenBuilder& InChildBuilder, IPropertyTypeCustomizationUtils& InCustomizationUtils)
+    {
+        using VariantType = TVariant<Ts...>;
+        using FnInvoker = void(FVariantDetailCustomization::*)(VariantType&, ProxyArrayType&, IDetailChildrenBuilder&, IPropertyTypeCustomizationUtils&);
+        static constexpr FnInvoker Invokers[] = { &FVariantDetailCustomization::CustomizevariantImpl<Ts>... };
+
+        for (auto& Invoker : Invokers)
+        {
+            (this->*Invoker)(Variant, Map, InChildBuilder, InCustomizationUtils);
+        }
+    }
+
+
 public:
 	static TSharedRef<IPropertyTypeCustomization> MakeInstance()
 	{
@@ -53,7 +113,7 @@ public:
 
         FVariantType* CurrValue = nullptr;
         GetValueRef(CurrValue);
-        
+
         TypeOptions = GetTypeOptions(CurrValue->Variant);
         TSharedPtr<FString> InitiallySellectedItem = TypeOptions[CurrValue->GetIndex()];
 
@@ -90,43 +150,10 @@ public:
 	virtual void CustomizeChildren(TSharedRef<IPropertyHandle> InPropertyHandle, IDetailChildrenBuilder& InChildBuilder, IPropertyTypeCustomizationUtils& InCustomizationUtils) override
 	{
         LayoutBuilder = &InChildBuilder.GetParentCategory().GetParentLayout();
-
-
+        
         FVariantType* CurrValue = nullptr;
         GetValueRef(CurrValue);
-        CurrValue->Visit([&](auto& Value)
-        {
-            using ValueType = std::remove_cvref_t<decltype(Value)>;
-            if constexpr (requires() { TBaseStructure<ValueType>::Get(); })
-            {
-                auto Row = InChildBuilder.AddExternalStructure(MakeShareable(new FStructOnScope(TBaseStructure<ValueType>::Get(), (uint8*)&Value)));
-            }
-            else
-            { 
-                using ProxyType = TVariantElementTrait<ValueType>::Type;
-                TUniquePtr<ProxyType> ProxyPtr = MakeUnique<ProxyType>();
-                ProxyType* ProxyRawPtr = ProxyPtr.Get();
-                ProxyRawPtr->Init(Value);
-                Proxy = MoveTemp(ProxyPtr);
-                
-                auto Row = InChildBuilder.AddExternalStructure(MakeShareable(new FStructOnScope(ProxyType::StaticStruct(), (uint8*)ProxyRawPtr)));
-                Row->Visibility(EVisibility::Collapsed);
-                TSharedPtr<IPropertyHandle> ChildStructHandle = Row->GetPropertyHandle();
-                ChildStructHandle->SetOnChildPropertyValueChanged(FSimpleDelegate::CreateLambda([this, ProxyRawPtr]()
-                {
-                    if constexpr (requires() { TVariantElementTrait<ValueType>::Conversion(Value); })
-                    {
-                        OnValueChanged(TVariantElementTrait<ValueType>::Conversion(ProxyRawPtr->ValueRef()));
-                    }
-                    else
-                    {
-                        OnValueChanged(ProxyRawPtr->ValueRef());
-                    }
-                }));
-                ProxyRawPtr->OnStructureAdded(ChildStructHandle, InChildBuilder, InCustomizationUtils);
-            }
-            
-        });
+        CustomizeVariant(CurrValue->Variant, ProxyMap, InChildBuilder, InCustomizationUtils);
 	}
 
     FPropertyAccess::Result GetValueRef(FVariantType*& OutValue)
@@ -167,10 +194,6 @@ public:
             return;
         }
         
-        if (CurrValue->Variant.IndexOfType<std::remove_cvref_t<T>>() != CurrValue->Variant.GetIndex())
-        {
-            LayoutBuilder->ForceRefreshDetails();
-        }
         FScopedTransaction Transaction(FText::FromString(TEXT("Set Struct Value")));
         VariantStructPropertyHandle->NotifyPreChange();
         *CurrValue = Forward<T>(InValue);
@@ -193,11 +216,31 @@ public:
             GetValueRef(CurrValue);
             if (!CurrValue)
             {
-                LayoutBuilder->ForceRefreshDetails();
+                return;
             }
 
             EmplaceImpl(Index, CurrValue->Variant);
-            LayoutBuilder->ForceRefreshDetails();
+            CurrValue->Visit([&](auto& Value) 
+            {
+                using ValueType = std::remove_cvref_t<decltype(Value)>;
+                using ProxyType = TVariantElementTrait<ValueType>::Type;
+
+                TAttribute<EVisibility> Visibility = TAttribute<EVisibility>::CreateLambda([&]()
+                {
+                    FVariantType* CurrValue = nullptr;
+                    GetValueRef(CurrValue);
+                    if (!CurrValue)
+                    {
+                        return EVisibility::Collapsed;
+                    }
+                    int32 TypeIndex = CurrValue->Variant.IndexOfType<ValueType>();
+                    int32 CurrentIndex = CurrValue->GetIndex();
+
+                    return TypeIndex == CurrentIndex ? EVisibility::Visible : EVisibility::Collapsed;
+                });
+
+                static_cast<ProxyType*>(ProxyMap[Index].Get())->GetValueAs<ValueType>() = Value;
+            });
         }
         else
         {
@@ -207,8 +250,11 @@ public:
 
     TSharedPtr<IPropertyHandle> VariantStructPropertyHandle;
     IDetailLayoutBuilder* LayoutBuilder;
-    TUniquePtr<FVariantElementProxy> Proxy;
+    
+    
     TArray<TSharedPtr<FString>> TypeOptions;
     TSharedPtr<SSearchableComboBox> TypeCombobox;
+
+    TArray<TUniquePtr<FVariantElementProxy>> ProxyMap;
 };
 
